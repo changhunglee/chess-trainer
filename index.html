@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chess Repertoire Trainer</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+</head>
+<body style="margin:0">
+  <div id="root"></div>
+  <script type="text/babel">
+const { useState, useRef, useEffect, useCallback } = React;
+
+const PIECE_UNICODE = {
+  K: { w: "\u2654", b: "\u265A" }, Q: { w: "\u2655", b: "\u265B" }, R: { w: "\u2656", b: "\u265C" },
+  B: { w: "\u2657", b: "\u265D" }, N: { w: "\u2658", b: "\u265E" }, P: { w: "\u2659", b: "\u265F" },
+};
+
+const INIT_BOARD = () => {
+  const b = Array(8).fill(null).map(() => Array(8).fill(null));
+  const back = ["R","N","B","Q","K","B","N","R"];
+  for (let i = 0; i < 8; i++) {
+    b[0][i] = { type: back[i], color: "b" };
+    b[1][i] = { type: "P", color: "b" };
+    b[6][i] = { type: "P", color: "w" };
+    b[7][i] = { type: back[i], color: "w" };
+  }
+  return b;
+};
+
+const FILES = "abcdefgh";
+const algToCoord = (s) => [8 - parseInt(s[1]), FILES.indexOf(s[0])];
+
+function cloneBoard(b) { return b.map(row => row.map(cell => cell ? { ...cell } : null)); }
+
+function findKing(board, color) {
+  for (let r = 0; r < 8; r++)
+    for (let c = 0; c < 8; c++)
+      if (board[r][c]?.type === "K" && board[r][c]?.color === color) return [r, c];
+  return null;
+}
+
+function isSquareAttacked(board, r, c, byColor) {
+  const dir = byColor === "w" ? 1 : -1;
+  if (r - dir >= 0 && r - dir < 8) {
+    if (c - 1 >= 0 && board[r - dir][c - 1]?.type === "P" && board[r - dir][c - 1]?.color === byColor) return true;
+    if (c + 1 < 8 && board[r - dir][c + 1]?.type === "P" && board[r - dir][c + 1]?.color === byColor) return true;
+  }
+  for (const [dr, dc] of [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]]) {
+    const nr = r + dr, nc = c + dc;
+    if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8 && board[nr][nc]?.type === "N" && board[nr][nc]?.color === byColor) return true;
+  }
+  for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[-1,1],[1,-1],[1,1]]) {
+    for (let i = 1; i < 8; i++) {
+      const nr = r + dr * i, nc = c + dc * i;
+      if (nr < 0 || nr >= 8 || nc < 0 || nc >= 8) break;
+      const p = board[nr][nc];
+      if (p) {
+        if (p.color === byColor) {
+          const isDiag = dr !== 0 && dc !== 0;
+          if (isDiag && (p.type === "B" || p.type === "Q")) return true;
+          if (!isDiag && (p.type === "R" || p.type === "Q")) return true;
+          if (i === 1 && p.type === "K") return true;
+        }
+        break;
+      }
+    }
+  }
+  return false;
+}
+
+function isInCheck(board, color) {
+  const king = findKing(board, color);
+  if (!king) return false;
+  return isSquareAttacked(board, king[0], king[1], color === "w" ? "b" : "w");
+}
+
+function applyMoveRaw(board, fr, fc, tr, tc, promo) {
+  const nb = cloneBoard(board);
+  const piece = nb[fr][fc];
+  if (!piece) return nb;
+  if (piece.type === "K" && Math.abs(tc - fc) === 2) {
+    if (tc > fc) { nb[fr][5] = nb[fr][7]; nb[fr][7] = null; }
+    else { nb[fr][3] = nb[fr][0]; nb[fr][0] = null; }
+  }
+  if (piece.type === "P" && tc !== fc && !nb[tr][tc]) nb[fr][tc] = null;
+  nb[tr][tc] = { ...piece };
+  nb[fr][fc] = null;
+  if (piece.type === "P" && (tr === 0 || tr === 7)) nb[tr][tc] = { type: promo || "Q", color: piece.color };
+  return nb;
+}
+
+function getLegalMoves(board, fr, fc, lastMoveData, castleRights) {
+  const piece = board[fr][fc];
+  if (!piece) return [];
+  const color = piece.color;
+  const moves = [];
+  const tryMove = (tr, tc, promo) => {
+    const nb = applyMoveRaw(board, fr, fc, tr, tc, promo);
+    if (!isInCheck(nb, color)) moves.push({ tr, tc, promo });
+  };
+  if (piece.type === "P") {
+    const dir = color === "w" ? -1 : 1;
+    const startRow = color === "w" ? 6 : 1;
+    const promoRow = color === "w" ? 0 : 7;
+    if (fr + dir >= 0 && fr + dir < 8 && !board[fr + dir][fc]) {
+      if (fr + dir === promoRow) { for (const p of ["Q","R","B","N"]) tryMove(fr + dir, fc, p); }
+      else { tryMove(fr + dir, fc); if (fr === startRow && !board[fr + 2 * dir][fc]) tryMove(fr + 2 * dir, fc); }
+    }
+    for (const dc of [-1, 1]) {
+      const nc = fc + dc; if (nc < 0 || nc > 7) continue;
+      const tr = fr + dir; if (tr < 0 || tr > 7) continue;
+      if (board[tr][nc] && board[tr][nc].color !== color) {
+        if (tr === promoRow) { for (const p of ["Q","R","B","N"]) tryMove(tr, nc, p); } else tryMove(tr, nc);
+      }
+      if (!board[tr][nc] && lastMoveData) {
+        const epRow = color === "w" ? 3 : 4;
+        if (fr === epRow && lastMoveData.piece === "P" && Math.abs(lastMoveData.fr - lastMoveData.tr) === 2 && lastMoveData.tc === nc) tryMove(tr, nc);
+      }
+    }
+  } else if (piece.type === "N") {
+    for (const [dr, dc] of [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]]) {
+      const nr = fr + dr, nc = fc + dc;
+      if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8 && (!board[nr][nc] || board[nr][nc].color !== color)) tryMove(nr, nc);
+    }
+  } else if (piece.type === "K") {
+    for (const [dr, dc] of [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]]) {
+      const nr = fr + dr, nc = fc + dc;
+      if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8 && (!board[nr][nc] || board[nr][nc].color !== color)) tryMove(nr, nc);
+    }
+    const row = color === "w" ? 7 : 0;
+    if (fr === row && fc === 4 && castleRights) {
+      const opp = color === "w" ? "b" : "w";
+      if (castleRights[color+"K"] && board[row][7]?.type === "R" && board[row][7]?.color === color && !board[row][5] && !board[row][6] && !isSquareAttacked(board,row,4,opp) && !isSquareAttacked(board,row,5,opp) && !isSquareAttacked(board,row,6,opp)) tryMove(row, 6);
+      if (castleRights[color+"Q"] && board[row][0]?.type === "R" && board[row][0]?.color === color && !board[row][1] && !board[row][2] && !board[row][3] && !isSquareAttacked(board,row,4,opp) && !isSquareAttacked(board,row,3,opp) && !isSquareAttacked(board,row,2,opp)) tryMove(row, 2);
+    }
+  } else {
+    const isDiag = piece.type === "B" || piece.type === "Q";
+    const isStraight = piece.type === "R" || piece.type === "Q";
+    const dirs = [];
+    if (isDiag) dirs.push([-1,-1],[-1,1],[1,-1],[1,1]);
+    if (isStraight) dirs.push([-1,0],[1,0],[0,-1],[0,1]);
+    for (const [dr, dc] of dirs) {
+      for (let i = 1; i < 8; i++) {
+        const nr = fr + dr * i, nc = fc + dc * i;
+        if (nr < 0 || nr >= 8 || nc < 0 || nc >= 8) break;
+        if (board[nr][nc]) { if (board[nr][nc].color !== color) tryMove(nr, nc); break; }
+        tryMove(nr, nc);
+      }
+    }
+  }
+  return moves;
+}
+
+function generateSAN(board, fr, fc, tr, tc, promo, castleRights, lastMoveData) {
+  const piece = board[fr][fc];
+  if (!piece) return "?";
+  const color = piece.color;
+  if (piece.type === "K" && Math.abs(tc - fc) === 2) return tc > fc ? "O-O" : "O-O-O";
+  let san = "";
+  const isCapture = !!board[tr][tc] || (piece.type === "P" && fc !== tc);
+  if (piece.type === "P") {
+    if (isCapture) san += FILES[fc] + "x";
+    san += FILES[tc] + (8 - tr);
+    if (promo) san += "=" + promo;
+  } else {
+    san += piece.type;
+    let ambig = [];
+    for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+      if (r === fr && c === fc) continue;
+      const p = board[r][c];
+      if (!p || p.type !== piece.type || p.color !== color) continue;
+      const mv = getLegalMoves(board, r, c, lastMoveData, castleRights);
+      if (mv.some(m => m.tr === tr && m.tc === tc)) ambig.push([r, c]);
+    }
+    if (ambig.length > 0) {
+      if (ambig.every(([, c]) => c !== fc)) san += FILES[fc];
+      else if (ambig.every(([r]) => r !== fr)) san += (8 - fr);
+      else san += FILES[fc] + (8 - fr);
+    }
+    if (isCapture) san += "x";
+    san += FILES[tc] + (8 - tr);
+  }
+  const nb = applyMoveRaw(board, fr, fc, tr, tc, promo);
+  const opp = color === "w" ? "b" : "w";
+  if (isInCheck(nb, opp)) {
+    let hasLegal = false;
+    for (let r = 0; r < 8 && !hasLegal; r++) for (let c = 0; c < 8 && !hasLegal; c++) {
+      if (nb[r][c]?.color === opp && getLegalMoves(nb, r, c, { piece: piece.type, fr, fc, tr, tc }, castleRights).length > 0) hasLegal = true;
+    }
+    san += hasLegal ? "+" : "#";
+  }
+  return san;
+}
+
+function parseMove(board, moveStr, color, lastMove) {
+  let m = moveStr.replace(/[+#!?=]/g, "").trim();
+  if (!m) return null;
+  if (m === "0-0" || m === "O-O") { const r = color === "w" ? 7 : 0; return { fr: r, fc: 4, tr: r, tc: 6 }; }
+  if (m === "0-0-0" || m === "O-O-O") { const r = color === "w" ? 7 : 0; return { fr: r, fc: 4, tr: r, tc: 2 }; }
+  let promo = null;
+  const pm = m.match(/([QRBN])$/);
+  if (pm && m.length > 2) { const bP = m[m.length - 2]; if (bP >= '1' && bP <= '8') { promo = pm[1]; m = m.slice(0, -1); } }
+  m = m.replace("x", "");
+  let pieceType, fileHint = null, rankHint = null, targetSq;
+  if (m[0] >= "a" && m[0] <= "h") {
+    pieceType = "P";
+    if (m.length === 2) targetSq = m;
+    else if (m.length === 3) { fileHint = m[0]; targetSq = m.slice(1); }
+    else if (m.length === 4) { fileHint = m[0]; targetSq = m.slice(2); }
+  } else {
+    pieceType = m[0];
+    if (m.length === 3) targetSq = m.slice(1);
+    else if (m.length === 4) { const h = m[1]; if (h >= "a" && h <= "h") fileHint = h; else if (h >= "1" && h <= "8") rankHint = h; targetSq = m.slice(2); }
+    else if (m.length === 5) { fileHint = m[1]; rankHint = m[2]; targetSq = m.slice(3); }
+  }
+  if (!targetSq || targetSq.length !== 2) return null;
+  const [tr, tc] = algToCoord(targetSq);
+  if (tr < 0 || tr > 7 || tc < 0 || tc > 7) return null;
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+    const p = board[r][c];
+    if (!p || p.color !== color || p.type !== pieceType) continue;
+    if (fileHint && FILES[c] !== fileHint) continue;
+    if (rankHint && String(8 - r) !== rankHint) continue;
+    if (pieceType === "P") {
+      const dir = color === "w" ? -1 : 1;
+      if (tc === c) {
+        if (r + dir === tr && !board[tr][tc]) { const nb = applyMoveRaw(board, r, c, tr, tc, promo); if (!isInCheck(nb, color)) return { fr: r, fc: c, tr, tc, promo }; }
+        const sRow = color === "w" ? 6 : 1;
+        if (r === sRow && r + 2 * dir === tr && !board[r + dir][c] && !board[tr][tc]) { const nb = applyMoveRaw(board, r, c, tr, tc, promo); if (!isInCheck(nb, color)) return { fr: r, fc: c, tr, tc, promo }; }
+      } else if (Math.abs(tc - c) === 1 && r + dir === tr) {
+        if (board[tr][tc] && board[tr][tc].color !== color) { const nb = applyMoveRaw(board, r, c, tr, tc, promo); if (!isInCheck(nb, color)) return { fr: r, fc: c, tr, tc, promo }; }
+        if (!board[tr][tc] && lastMove) {
+          const epRow = color === "w" ? 3 : 4;
+          if (r === epRow && lastMove.piece === "P" && Math.abs(lastMove.fr - lastMove.tr) === 2 && lastMove.tc === tc) { const nb = applyMoveRaw(board, r, c, tr, tc, promo); if (!isInCheck(nb, color)) return { fr: r, fc: c, tr, tc, promo }; }
+        }
+      }
+    } else if (pieceType === "N") {
+      const dr2 = Math.abs(tr - r), dc2 = Math.abs(tc - c);
+      if ((dr2 === 2 && dc2 === 1) || (dr2 === 1 && dc2 === 2)) { const nb = applyMoveRaw(board, r, c, tr, tc); if (!isInCheck(nb, color)) return { fr: r, fc: c, tr, tc }; }
+    } else if (pieceType === "K") {
+      if (Math.abs(tr - r) <= 1 && Math.abs(tc - c) <= 1) { const nb = applyMoveRaw(board, r, c, tr, tc); if (!isInCheck(nb, color)) return { fr: r, fc: c, tr, tc }; }
+    } else {
+      const isDiag2 = pieceType === "B" || pieceType === "Q";
+      const isStraight2 = pieceType === "R" || pieceType === "Q";
+      const dirs2 = [];
+      if (isDiag2) dirs2.push([-1,-1],[-1,1],[1,-1],[1,1]);
+      if (isStraight2) dirs2.push([-1,0],[1,0],[0,-1],[0,1]);
+      for (const [dr, dc] of dirs2) {
+        let blocked = false;
+        for (let i = 1; i < 8; i++) {
+          const nr = r + dr * i, nc = c + dc * i;
+          if (nr < 0 || nr >= 8 || nc < 0 || nc >= 8) break;
+          if (nr === tr && nc === tc && !blocked) { const nb = applyMoveRaw(board, r, c, tr, tc); if (!isInCheck(nb, color)) return { fr: r, fc: c, tr, tc }; break; }
+          if (board[nr][nc]) blocked = true;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function buildLines() {
+  const commonMoves = "1.e4 e5 2.Nf3 Nc6 3.Bc4 Bc5 4.c3 Nf6 5.d4 exd4";
+  const lines = [
+    { id: "line1", name: "Greco Attack (Main)", color: "#e74c3c", cat: "gp", moves: commonMoves + " 6.cxd4 Bb4+ 7.Bd2 Bxd2+ 8.Nbxd2 d5 9.exd5 Nxd5 10.Qb3 Na5 11.Qa4 Nc6 12.Bb5 Qe7+ 13.Ne5 Bd7" },
+    { id: "line2", name: "Kf1 d5", color: "#3498db", cat: "gp", moves: commonMoves + " 6.cxd4 Bb4+ 7.Kf1 d5 8.exd5 Nxd5 9.Nc3 Be6 10.Qe2 Bxc3 11.bxc3 Nxc3 12.Qe1 Nd5 13.Ba3 a6" },
+    { id: "line3", name: "Moller Attack: 0-0 Bxc3", color: "#2ecc71", cat: "gp", moves: commonMoves + " 6.cxd4 Bb4+ 7.Nc3 Nxe4 8.0-0 Bxc3 9.d5 Bf6 10.Re1 Ne7 11.Rxe4 d6 12.Bg5 Bxg5 13.Nxg5 h6" },
+    { id: "line5", name: "Bd2 Bxd2+ exd5", color: "#9b59b6", cat: "gp", moves: commonMoves + " 6.cxd4 Bb4+ 7.Bd2 Bxd2+ 8.Nbxd2 exd5 9.exd5 Nxd5 10.Qb3 Bg5 11.Bxd5 Nxd5 12.Qxe4 Nxd5 13.Bxe7 Nxe7" },
+    { id: "line5r", name: "Bd2 d5 (r)", color: "#9b59b6", cat: "gp", moves: commonMoves + " 6.cxd4 Bb4+ 7.Bd2 d5 8.exd5 Nxd5 9.0-0 Be6 10.Bg5 Be7 11.Bxd5 Bxd5 12.Nxd5 Qxd5 13.Bxe7 Nxe7" },
+    { id: "line6", name: "e5 d5 (Bd3)", color: "#1abc9c", cat: "gp", moves: commonMoves + " 6.e5 d5 7.Bb5 Ne4 8.cxd4 Bb6 9.Nc3 0-0 10.Be3 Ne7 11.0-0 Bd3 12.Bd3 Nxc3 13.bxc3 Bf5" },
+    { id: "line6w", name: "e5 d5 (c6)", color: "#1abc9c", cat: "gp", moves: commonMoves + " 6.e5 d5 7.Bb5 Ne4 8.cxd4 Bb6 9.Nc3 0-0 10.Be3 Ne7 11.0-0 c6 12.Bd3 Nxc3 13.bxc3 Bf5" },
+    { id: "line11o", name: "Greco: Qa4 Nc6 (0-0)", color: "#e67e22", cat: "gp", moves: commonMoves + " 6.cxd4 Bb4+ 7.Bd2 Bxd2+ 8.Nbxd2 d5 9.exd5 Nxd5 10.Qb3 Na5 11.Qa4 Nc6 12.Bb5 Qe7+ 13.Ne5 Bd7" },
+  ];
+  const c2 = "1.e4 e5 2.Nf3 Nc6 3.Bc4 Bc5 4.c3 Nf6";
+  lines.push({ id: "t2_col7", name: "Col 7: d3 Main (a-e)", color: "#ff6b6b", cat: "d3", moves: c2+" 5.d3 a6 6.0-0 Ba7 7.Bb3 0-0 8.h3 d5 9.Nbd2 dxe4 10.dxe4 Qe7 11.Nh2 Nd8" });
+  lines.push({ id: "t2_col8", name: "Col 8: Re1 d6 (f-g)", color: "#ffeaa7", cat: "d3", moves: c2+" 5.d3 a6 6.0-0 Ba7 7.Re1 d6 8.Bb3 0-0 9.h3 h6 10.Nbd2 Be6 11.Nf1 Re8" });
+  lines.push({ id: "t2_col9", name: "Col 9: Nbd2 Qe2 (h-i)", color: "#96ceb4", cat: "d3", moves: c2+" 5.d3 a6 6.Nbd2 Ba7 7.Bb3 0-0 8.h3 d5 9.Qe2 Re8 10.Nf1 Be6 11.Ng5 Na5" });
+  lines.push({ id: "t2_col10", name: "Col 10: b4 Bb6 (j-l)", color: "#45b7d1", cat: "d3", moves: c2+" 5.d3 a6 6.b4 Bb6 7.a4 a6 8.0-0 d6 9.Bg5 h6 10.Bh4 g5 11.Bg3 Bg4" });
+  lines.push({ id: "t2_col11", name: "Col 11: b4 a5 (m-o)", color: "#9b59b6", cat: "d3", moves: c2+" 5.d3 a6 6.b4 Bb6 7.a4 a5 8.b5 Ne7 9.0-0 0-0 10.Nbd2 Ng6 11.Ba3 Qe7" });
+  lines.push({ id: "t2_col12p", name: "Col 12: Bg5 Ng6 (p)", color: "#e67e22", cat: "d3", moves: c2+" 5.d3 a6 6.b4 Bb6 7.a4 a5 8.b5 Ne7 9.0-0 0-0 10.Nbd2 Bg5 11.Ng6 Ng6" });
+  lines.push({ id: "t2_col12q", name: "Col 12: Nh4 Nxh4 (q)", color: "#e67e22", cat: "d3", moves: c2+" 5.d3 a6 6.b4 Bb6 7.a4 a5 8.b5 Ne7 9.0-0 0-0 10.Nbd2 Bg5 11.Nh4 Nxh4" });
+  const c3 = "1.e4 e5 2.Nf3 Nc6 3.Bc4 Bc5";
+  const ev = "1.e4 e5 2.Nf3 Nc6 3.Bc4 Bc5 4.b4";
+  lines.push({ id: "evans1", name: "Col 1: Ba5 0-0 Qb3 (a-f)", color: "#e74c3c", cat: "evans", moves: ev+" Bxb4 5.c3 Ba5 6.0-0 d6 7.d4 Bb6 8.dxe5 dxe5 9.Qb3 Qf6 10.Bg5 Qg6 11.Bd5 f6 12.Bxg8 fxg5" });
+  lines.push({ id: "evans2", name: "Col 2: d4 0-0 Ba3 (g-j)", color: "#3498db", cat: "evans", moves: ev+" Bxb4 5.c3 Ba5 6.d4 exd4 7.0-0 Nge7 8.cxd4 d5 9.exd5 Nxd5 10.Ba3 Be6 11.Bb5 f6 12.Qa4 Bb6" });
+  lines.push({ id: "evans3", name: "Col 3: dxc3 Qb3 e5 (k-m)", color: "#2ecc71", cat: "evans", moves: ev+" Bxb4 5.c3 Ba5 6.d4 exd4 7.0-0 dxc3 8.Qb3 Qf6 9.e5 Qg6 10.Nxc3 Nge7 11.Ba3 0-0 12.Rad1 Rb8" });
+  lines.push({ id: "evans4", name: "Col 4: d6 Qb3 Nbd2 (n-q)", color: "#f39c12", cat: "evans", moves: ev+" Bxb4 5.c3 Ba5 6.d4 d6 7.Qb3 Qd7 8.Nbd2 Bb6 9.a4 Nf6 10.a5 Nxa5 11.Rxa5 Bxa5 12.dxe5 Ng4" });
+  lines.push({ id: "evans5", name: "Col 5: Be7 d4 Qh4 (r-v)", color: "#9b59b6", cat: "evans", moves: ev+" Bxb4 5.c3 Be7 6.d4 Na5 7.Be2 exd4 8.Qxd4 Nf6 9.e5 Nc6 10.Qh4 Nd5 11.Qg3 g6 12.0-0 Nb6" });
+  lines.push({ id: "evans6", name: "Col 6: Bb6 Declined (w-bb)", color: "#1abc9c", cat: "evans", moves: ev+" Bb6 5.a4 a6 6.Nc3 Nf6 7.Nd5 Nxd5 8.exd5 Nd4 9.a5 Ba7 10.d6 cxd6 11.0-0 0-0 12.Nxd4 Bxd4" });
+  lines.push({ id: "col13", name: "Col 13: c3 Bb6 d4 Qe7 (a-c)", color: "#ff4757", cat: "other", moves: c3+" 4.c3 Bb6 5.d4 Qe7 6.0-0 d6 7.h3 Nf6 8.Re1 0-0 9.a4 a6 10.Na3 Kh8 11.Nc2 Ng8" });
+  lines.push({ id: "col14", name: "Col 14: c3 d6 exd4 Bb6 (d-h)", color: "#5352ed", cat: "other", moves: c3+" 4.c3 d6 5.d4 exd4 6.cxd4 Bb6 7.Nc3 Nf6 8.Be3 0-0 9.Bb3 Bg4 10.Qd3 Qe7 11.Nd2 Be6" });
+  lines.push({ id: "col15", name: "Col 15: b4 Bb6 d3 (i-m)", color: "#ffa502", cat: "other", moves: c3+" 4.c3 Nf6 5.b4 Bb6 6.d3 d6 7.0-0 Ne7 8.Nbd2 c6 9.Re1 0-0 10.a4 Ng6 11.a5 Bc7" });
+  lines.push({ id: "col16", name: "Col 16: Nc3 Bg5 Bxf6 (n-q)", color: "#2ed573", cat: "other", moves: c3+" 4.Nc3 Nf6 5.d3 d6 6.Bg5 h6 7.Bxf6 Qxf6 8.Nd5 Qd8 9.c3 Ne7 10.d4 Nxd5 11.dxc5 Nf4" });
+  lines.push({ id: "col17", name: "Col 17: Na5 Bb3 (r-s)", color: "#ff6348", cat: "other", moves: c3+" 4.c3 Nf6 5.d3 d6 6.h3 Na5 7.Bb3 c6 8.d4 Nxb3 9.axb3 exd4 10.Nxd4 h6 11.Bh4 0-0" });
+  lines.push({ id: "col18", name: "Col 18: 0-0 Bxd4 (t-w)", color: "#a29bfe", cat: "other", moves: c3+" 4.0-0 Nf6 5.d4 Bxd4 6.Nxd4 Nxd4 7.Bg5 d6 8.f4 Qe7 9.fxe5 dxe5 10.c3 Ne6 11.Bxe6 Bxe6" });
+  const tk0 = "1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6 4.Ng5 d5 5.exd5 Na5 6.Bb5+ c6 7.dxc6 bxc6 8.Be2 h6";
+  lines.push({ id: "tk1", name: "Col 1: Nf3 Ne5 d4 b3 (a-f)", color: "#e74c3c", cat: "tk", moves: tk0+" 9.Nf3 e4 10.Ne5 Bd6 11.d4 exd3 12.Nxd3 Qc7 13.b3 0-0 14.Bb2 Ne4 15.Nc3 f5 16.h3 Ba6" });
+  lines.push({ id: "tk2", name: "Col 2: f4 exf3 d4 (g-j)", color: "#3498db", cat: "tk", moves: tk0+" 9.Nf3 e4 10.Ne5 Bd6 11.f4 exf3 12.Nxf3 0-0 13.d4 Re8 14.0-0 Bg4 15.Nc3 Bc7 16.Ne5 Bxe2" });
+  lines.push({ id: "tk3", name: "Col 3: Bc5 c3 f4 (k-m)", color: "#2ecc71", cat: "tk", moves: tk0+" 9.Nf3 e4 10.Ne5 Bc5 11.c3 Bd6 12.f4 exf3 13.Nxf3 0-0 14.d4 Re8 15.0-0 c5 16.Kh1 cxd4" });
+  lines.push({ id: "tk4", name: "Col 4: Qd4 f4 Qa4 (n-s)", color: "#f39c12", cat: "tk", moves: tk0+" 9.Nf3 e4 10.Ne5 Qd4 11.f4 Bc5 12.Rf1 Qd8 13.c3 Nd5 14.Qa4 0-0 15.Qxe4 Re8 16.d4 Bb6" });
+  lines.push({ id: "tk5", name: "Col 5: Nh3 Bc5 d3 (t-z)", color: "#9b59b6", cat: "tk", moves: tk0+" 9.Nh3 Bc5 10.0-0 0-0 11.d3 Nb7 12.Nc3 Nd5 13.Bf3 Bb6 14.Qe2 Re8 15.Re1 Nc5 16.Nf4 Nb4" });
+  lines.push({ id: "tk6", name: "Col 6: Bd6 d3 Nc3 (aa-dd)", color: "#1abc9c", cat: "tk", moves: tk0+" 9.Nf3 Bd6 10.d3 0-0 11.Nc3 Nd5 12.Ne4 Bc7 13.c4 Ne7 14.0-0 f5 15.Nc3 g5 16.Kh1 Ng6" });
+  const tkB = "1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6 4.Ng5";
+  lines.push({ id: "tk7", name: "Col 7: Bb5+ Qf3 Bd3 (a-e)", color: "#e74c3c", cat: "tk", moves: tkB+" d5 5.exd5 Na5 6.Bb5+ c6 7.dxc6 bxc6 8.Qf3 Rb8 9.Bd3 h6 10.Ne4 Nd5 11.b3 g6 12.Qg3 Nf4" });
+  lines.push({ id: "tk8", name: "Col 8: d3 Qe2 h3 (f-j)", color: "#3498db", cat: "tk", moves: tkB+" d5 5.exd5 Na5 6.d3 h6 7.Nf3 e4 8.Qe2 Nxc4 9.dxc4 Bc5 10.h3 0-0 11.Nh2 c6 12.dxc6 e3" });
+  lines.push({ id: "tk9", name: "Col 9: Fritz Nd4 c3 (k-p)", color: "#2ecc71", cat: "tk", moves: tkB+" d5 5.exd5 Nd4 6.c3 b5 7.Bf1 Nxd5 8.Ne4 Qh4 9.Ng3 Bb7 10.cxd4 0-0 11.Be2 Nf4 12.0-0 Rxd4" });
+  lines.push({ id: "tk10", name: "Col 10: Ulvestad b5 (q-r)", color: "#f39c12", cat: "tk", moves: tkB+" d5 5.exd5 b5 6.Bf1 h6 7.Nf3 Qxd5 8.Nc3 Qe6 9.Bxb5 Bb7 10.Qe2 0-0-0 11.Bxc6 Qxc6 12.d3 e4" });
+  lines.push({ id: "tk11", name: "Col 11: Traxler Bc5 (s-x)", color: "#9b59b6", cat: "tk", moves: tkB+" Bc5 5.Bxf7+ Ke7 6.Bd5 Rf8 7.Nf3 Nd4 8.Nxd4 Bxd4 9.0-0 c6 10.c3 Bb6 11.Bb3 Qe8 12.Re1 Qg6" });
+  lines.push({ id: "tk12", name: "Col 12: Nxf7 Bxf2+ (y-aa)", color: "#1abc9c", cat: "tk", moves: tkB+" d5 5.Nxf7 Bxf2+ 6.Kf1 Qe7 7.Nxh8 d5 8.exd5 Nd4 9.d6 Qxd6 10.Nf7 Qc5 11.d3 e4 12.c3 Bh4" });
+  const tkD4 = "1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6 4.d4 exd4 5.0-0";
+  lines.push({ id: "tk13", name: "Col 13: Max Lange e5 Re1+ (b-g)", color: "#e74c3c", cat: "tk_d4", moves: tkD4+" Bc5 6.e5 d5 7.exf6 dxc4 8.Re1+ Be6 9.Ng5 Qd5 10.Nc3 Qf5 11.Nce4 0-0-0 12.g4 Qe5" });
+  lines.push({ id: "tk14", name: "Col 14: Max Lange fxg7 Bg5 (h-j)", color: "#3498db", cat: "tk_d4", moves: tkD4+" Bc5 6.e5 d5 7.exf6 dxc4 8.fxg7 Rg8 9.Bg5 Be7 10.Bxe7 Kxe7 11.Nbd2 Rxg7 12.Nxc4 Be6" });
+  lines.push({ id: "tk15", name: "Col 15: Max Lange Bf4 d6 (k-n)", color: "#2ecc71", cat: "tk_d4", moves: tkD4+" Bc5 6.e5 d5 7.Bf4 d6 8.exd6 Bxd6 9.Re1+ Kf8 10.Bxd6+ Qxd6 11.c3 Qc5 12.Nbd2 d3" });
+  lines.push({ id: "tk16", name: "Col 16: Nxe4 Re1 Qa5 (o-s)", color: "#f39c12", cat: "tk_d4", moves: tkD4+" Nxe4 6.Re1 d5 7.Bxd5 Qxd5 8.Nc3 Qa5 9.Nxe4 Be6 10.Neg5 0-0-0 11.Nxe6 fxe6 12.Rxe6 Bd6" });
+  lines.push({ id: "tk17", name: "Col 17: Nxe4 Qa4 Bg5 (t-v)", color: "#9b59b6", cat: "tk_d4", moves: tkD4+" Nxe4 6.Re1 d5 7.Bxd5 Qxd5 8.Nc3 Qa5 9.Nxe4 Be6 10.Bd2 Qa4 11.Bg5 h6 12.Bh4 Bb4" });
+  lines.push({ id: "tk18", name: "Col 18: Nxe4 Qh5 Bg5 Bb4 (w-x)", color: "#1abc9c", cat: "tk_d4", moves: tkD4+" Nxe4 6.Re1 d5 7.Bxd5 Qxd5 8.Nc3 Qh5 9.Nxe4 Be6 10.Bg5 Bb4 11.c3 dxc3 12.bxc3 Ba5" });
+  const tkM = "1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6";
+  lines.push({ id: "tk19", name: "Col 19: d4 e5 Bb5 0-0 (a-e)", color: "#e74c3c", cat: "tk_misc", moves: tkM+" 4.d4 exd4 5.e5 d5 6.Bb5 Ne4 7.Nxd4 Bc5 8.0-0 0-0 9.Bxc6 bxc6 10.Nxc6 Qh4 11.Be3 Ba6" });
+  lines.push({ id: "tk20", name: "Col 20: d4 e5 Bxc6 Be3 (f-g)", color: "#3498db", cat: "tk_misc", moves: tkM+" 4.d4 exd4 5.e5 d5 6.Bb5 Ne4 7.Nxd4 Bc5 8.Bxc6 bxc6 9.0-0 Bc5 10.Be3 Qe7 11.Re1 0-0" });
+  lines.push({ id: "tk21", name: "Col 21: d3 Be7 Bb3 exd5 (h-l)", color: "#2ecc71", cat: "tk_misc", moves: tkM+" 4.d3 Be7 5.0-0 0-0 6.Bb3 d5 7.exd5 Nxd5 8.Re1 Bg4 9.h3 Bh5 10.g4 Bg6 11.Nxe5 Nxe5" });
+  lines.push({ id: "tk22", name: "Col 22: d3 Re1 c3 Ba4 (m-o)", color: "#f39c12", cat: "tk_misc", moves: tkM+" 4.d3 Be7 5.0-0 0-0 6.Re1 d6 7.c3 Be6 8.Bb5 Bd7 9.Ba4 a6 10.Nbd2 b5 11.Bc2 Re8" });
+  lines.push({ id: "tk23", name: "Col 23: d3 c3 exd5 h3 (p-r)", color: "#9b59b6", cat: "tk_misc", moves: tkM+" 4.d3 Be7 5.0-0 0-0 6.c3 d5 7.exd5 Nxd5 8.Re1 Bg4 9.h3 Bh5 10.Nbd2 Nf4 11.Nf1 Na5" });
+  lines.push({ id: "tk24", name: "Col 24: Nc3 Nxe4 Bd3 (s-y)", color: "#1abc9c", cat: "tk_misc", moves: tkM+" 4.Nc3 Nxe4 5.Nxe4 d5 6.Bd3 dxe4 7.Bxe4 Bd6 8.d4 exd4 9.Bxc6+ bxc6 10.Qxd4 0-0 11.0-0 c5" });
+  const rC = "1.e4 e5 2.Nf3 Nc6 3.Bb5 Bc5";
+  lines.push({ id: "ruy1", name: "Col 1: c3 f5 d4 Nfd2 (a-f)", color: "#e74c3c", cat: "ruy", moves: rC+" 4.c3 f5 5.d4 fxe4 6.Bxc6 dxc6 7.Nfd2 Bd6 8.dxe5 e3 9.fxe3 Bc5 10.0-0 Bxe3+" });
+  lines.push({ id: "ruy2", name: "Col 2: c3 f5 Nxe5 Qd5 (g-h)", color: "#3498db", cat: "ruy", moves: rC+" 4.c3 f5 5.d4 fxe4 6.Bxc6 dxc6 7.Nxe5 Qd5 8.Nxc6 bxc6 9.dxc5 Ba6 10.Qxd5 exd5" });
+  lines.push({ id: "ruy3", name: "Col 3: c3 Nge7 0-0 d4 (i-k)", color: "#2ecc71", cat: "ruy", moves: rC+" 4.c3 Nge7 5.0-0 Bb6 6.d4 exd4 7.cxd4 d5 8.exd5 Nxd5 9.Re1+ Be6 10.Bg5 Qd6" });
+  lines.push({ id: "ruy4", name: "Col 4: c3 Nf6 Qe2 e5 (l-o)", color: "#f39c12", cat: "ruy", moves: rC+" 4.c3 Nf6 5.d4 Bb6 6.Qe2 exd4 7.e5 0-0 8.cxd4 Re8 9.Be3 Ng4 10.Nc3 d6" });
+  lines.push({ id: "ruy5", name: "Col 5: c3 f5 0-0 dxe5 (p-r)", color: "#9b59b6", cat: "ruy", moves: rC+" 4.c3 f5 5.0-0 0-0 6.d4 Bb6 7.dxe5 Nxe4 8.Qd5 Nc5 9.Bg5 Ne7 10.Qd1 Ne4" });
+  lines.push({ id: "ruy6", name: "Col 6: 0-0 Nd4 Nxd4 c3 (s-u)", color: "#1abc9c", cat: "ruy", moves: rC+" 4.0-0 Nd4 5.Nxd4 Bxd4 6.c3 Bb6 7.d4 c6 8.Bc4 d6 9.dxe5 dxe5 10.Qxd8+ Bxd8" });
+  const rB = "1.e4 e5 2.Nf3 Nc6 3.Bb5 Nf6";
+  lines.push({ id: "ruyB7", name: "Col 7: 0-0 Bc5 Nxe5 (a-e)", color: "#e74c3c", cat: "ruy_berlin", moves: rB+" 4.0-0 Bc5 5.Nxe5 Nxe4 6.Qe2 Nxe5 7.Qxe4 Qe7 8.Nc3 Ng6 9.Qxe7+ Bxe7 10.Nd5 Bd6 11.Re1+ Kd8" });
+  lines.push({ id: "ruyB8", name: "Col 8: Berlin Wall Nc3 h6 (f-k)", color: "#3498db", cat: "ruy_berlin", moves: rB+" 4.0-0 Nxe4 5.d4 Nd6 6.Bxc6 dxc6 7.dxe5 Nf5 8.Qxd8+ Kxd8 9.Nc3 h6 10.h3 Bd7 11.b3 Ke8" });
+  lines.push({ id: "ruyB9", name: "Col 9: Berlin Wall Rd1+ (i-m)", color: "#2ecc71", cat: "ruy_berlin", moves: rB+" 4.0-0 Nxe4 5.d4 Nd6 6.Bxc6 dxc6 7.dxe5 Nf5 8.Qxd8+ Kxd8 9.Rd1+ Ke8 10.Nc3 h6 11.h3 a5" });
+  lines.push({ id: "ruyB10", name: "Col 10: Ne4 Qe2 Nd4 (n-p)", color: "#f39c12", cat: "ruy_berlin", moves: rB+" 4.0-0 Nxe4 5.d4 Nd6 6.Bxc6 dxc6 7.dxe5 Ne4 8.Qe2 Bf5 9.Rd1 Qc8 10.Nd4 Bc5 11.b4 Bb6" });
+  lines.push({ id: "ruyB11", name: "Col 11: d4 e5 Ne4 Bxc6 (q-s)", color: "#9b59b6", cat: "ruy_berlin", moves: rB+" 4.d4 exd4 5.e5 Ne4 6.0-0 a6 7.Bxc6 dxc6 8.Qe2 Bf5 9.Rd1 Bc5 10.Be3 Qe7 11.Nxd4 Bxd4" });
+  lines.push({ id: "ruyB12", name: "Col 12: Qe2 c3 Bg5 (t-u)", color: "#1abc9c", cat: "ruy_berlin", moves: rB+" 4.Qe2 Bc5 5.c3 Qe7 6.d3 d6 7.Bg5 h6 8.Bh4 Bd7 9.Nbd2 a6 10.Ba4 g5" });
+  const rCoz = "1.e4 e5 2.Nf3 Nc6 3.Bb5 Nge7";
+  lines.push({ id: "ruyC13", name: "Col 13: 0-0 g6 c3 d4 (a-c)", color: "#e74c3c", cat: "ruy_cozio", moves: rCoz+" 4.0-0 g6 5.c3 Bg7 6.d4 exd4 7.cxd4 d5 8.exd5 Nxd5 9.Re1+ Be6 10.Bg5 Qd6 11.Nbd2 0-0" });
+  lines.push({ id: "ruyC14", name: "Col 14: c3 g6 d4 Nc3 (d-f)", color: "#3498db", cat: "ruy_cozio", moves: rCoz+" 4.c3 g6 5.d4 exd4 6.cxd4 d5 7.Nc3 Bg7 8.Bg5 f6 9.Be3 Be6 10.0-0 0-0 11.Re1 Bf7" });
+  lines.push({ id: "ruyC15", name: "Col 15: Nc3 Ng6 d4 h4 (g-i)", color: "#2ecc71", cat: "ruy_cozio", moves: rCoz+" 4.Nc3 Ng6 5.d4 exd4 6.Nxd4 Bc5 7.Be3 Bxd4 8.Bxd4 0-0 9.h4 d6 10.h5 Nge5 11.h6 Bg4" });
+  const rBd = "1.e4 e5 2.Nf3 Nc6 3.Bb5 Nd4";
+  lines.push({ id: "ruyBd16", name: "Col 16: Nxd4 0-0 Bc5 c3 (j-l)", color: "#f39c12", cat: "ruy_bird", moves: rBd+" 4.Nxd4 exd4 5.0-0 Bc5 6.c3 c6 7.Ba4 Ne7 8.d3 d5 9.Nd2 Bb6 10.cxd4 Bxd4 11.Kh1 0-0" });
+  lines.push({ id: "ruyBd17", name: "Col 17: Nxd4 Bc4 c3 a4 (m-p)", color: "#9b59b6", cat: "ruy_bird", moves: rBd+" 4.Nxd4 exd4 5.0-0 Bc4 6.Bc4 d6 7.c3 c6 8.a4 Ne7 9.b4 Bb6 10.a5 Bc7 11.cxd4" });
+  lines.push({ id: "ruyBd18", name: "Col 18: Bc4 Bc5 Nxd4 c3 (q-s)", color: "#1abc9c", cat: "ruy_bird", moves: rBd+" 4.Bc4 Bc5 5.Nxd4 Bxd4 6.c3 Bb6 7.d4 Qe7 8.0-0 Nf6 9.a4 a6 10.Be3 Nxe4 11.Re1 0-0" });
+  const rSt = "1.e4 e5 2.Nf3 Nc6 3.Bb5 d6";
+  lines.push({ id: "ruyS19", name: "Col 19: d4 Nc3 0-0 Bxc6 (a-e)", color: "#e74c3c", cat: "ruy_steinitz", moves: rSt+" 4.d4 Bd7 5.Nc3 Nf6 6.0-0 Be7 7.Bxc6 Bxc6 8.Qd3 exd4 9.Nxd4 Bd7 10.b3 0-0 11.Bb2 c6" });
+  lines.push({ id: "ruyS20", name: "Col 20: d4 Nxd4 g6 Bh6 (f-h)", color: "#3498db", cat: "ruy_steinitz", moves: rSt+" 4.d4 Bd7 5.Nc3 exd4 6.Nxd4 g6 7.Be3 Bg7 8.Qd2 Nf6 9.Bxc6 bxc6 10.Bh6 0-0 11.Bxg7 Kxg7" });
+  lines.push({ id: "ruyS21", name: "Col 21: d4 Nge7 Bc4 Qg3 (i-j)", color: "#2ecc71", cat: "ruy_steinitz", moves: rSt+" 4.d4 Bd7 5.Nc3 Nge7 6.Bc4 exd4 7.Nxd4 Nxd4 8.Qxd4 Nc6 9.Qe3 Ne5 10.Bb3 c6 11.Qg3 Ng6" });
+  const rG6 = "1.e4 e5 2.Nf3 Nc6 3.Bb5 g6";
+  lines.push({ id: "ruyG22", name: "Col 22: c3 d6 d4 dxe5 (k-o)", color: "#f39c12", cat: "ruy_g6", moves: rG6+" 4.c3 d6 5.d4 Bd7 6.0-0 Bg7 7.dxe5 dxe5 8.Qe2 Nge7 9.Rd1 Qc8 10.Be3 0-0 11.Bc5 Rd8" });
+  lines.push({ id: "ruyG23", name: "Col 23: c3 a6 Bc4 Bg5 (p-r)", color: "#9b59b6", cat: "ruy_g6", moves: rG6+" 4.c3 a6 5.Bc4 Bg7 6.d4 d6 7.Bg5 Nge7 8.dxe5 dxe5 9.Qe2 0-0 10.a4 Qe8 11.Qe3 Kh8" });
+  lines.push({ id: "ruyG24", name: "Col 24: d4 Bg5! f6 Bh4 (s-u)", color: "#1abc9c", cat: "ruy_g6", moves: rG6+" 4.d4 exd4 5.Bg5 f6 6.Bh4 Bg7 7.Nxd4 Nge7 8.Nc3 0-0 9.0-0 Kh8 10.f4 Nxd4 11.Qxd4 d6" });
+  return lines;
+}
+
+function parseMoveSequence(movesStr) {
+  const tokens = movesStr.replace(/\d+\./g, "").trim().split(/\s+/).filter(Boolean);
+  const result = [];
+  let board = INIT_BOARD(), color = "w", lastMoveData = null;
+  for (const token of tokens) {
+    const mv = parseMove(board, token, color, lastMoveData);
+    if (mv) {
+      result.push({ san: token, ...mv, color });
+      board = applyMoveRaw(board, mv.fr, mv.fc, mv.tr, mv.tc, mv.promo);
+      lastMoveData = { piece: board[mv.tr][mv.tc]?.type, fr: mv.fr, fc: mv.fc, tr: mv.tr, tc: mv.tc };
+      color = color === "w" ? "b" : "w";
+    } else { console.warn("Failed to parse:", token, "for", color); break; }
+  }
+  return result;
+}
+
+function getCategory(line) {
+  if (line.cat === "evans") return "Evans Gambit";
+  if (line.cat === "tk") return "Two Knights' Defense";
+  if (line.cat === "tk_d4") return "Two Knights' \u2014 4.d4 exd4 5.0-0";
+  if (line.cat === "tk_misc") return "Two Knights' \u2014 Other Systems";
+  if (line.cat === "ruy") return "Ruy Lopez: Classical (Cordel)";
+  if (line.cat === "ruy_berlin") return "Ruy Lopez: Berlin Defense";
+  if (line.cat === "ruy_cozio") return "Ruy Lopez: Cozio Defense";
+  if (line.cat === "ruy_bird") return "Ruy Lopez: Bird's Defense";
+  if (line.cat === "ruy_steinitz") return "Ruy Lopez: Old Steinitz Defense";
+  if (line.cat === "ruy_g6") return "Ruy Lopez: 3...g6";
+  if (line.cat === "d3") return "Giuoco Piano \u2014 d3 System";
+  if (line.cat === "other") return "Giuoco Piano \u2014 Other";
+  return "Giuoco Piano";
+}
+
+const CATEGORY_ORDER = [
+  { cat: "gp", label: "Giuoco Piano (4.c3 Nf6 5.d4)" },
+  { cat: "d3", label: "Giuoco Piano \u2014 d3 System" },
+  { cat: "other", label: "Giuoco Piano \u2014 Other" },
+  { cat: "evans", label: "Evans Gambit (4.b4)" },
+  { cat: "tk", label: "Two Knights' (4.Ng5)" },
+  { cat: "tk_d4", label: "Two Knights' (4.d4 exd4 5.0-0)" },
+  { cat: "tk_misc", label: "Two Knights' \u2014 Other" },
+  { cat: "ruy", label: "Ruy Lopez: Classical / Cordel" },
+  { cat: "ruy_berlin", label: "Ruy Lopez: Berlin Defense" },
+  { cat: "ruy_cozio", label: "Ruy Lopez: Cozio (3...Nge7)" },
+  { cat: "ruy_bird", label: "Ruy Lopez: Bird's (3...Nd4)" },
+  { cat: "ruy_steinitz", label: "Ruy Lopez: Old Steinitz (3...d6)" },
+  { cat: "ruy_g6", label: "Ruy Lopez: 3...g6" },
+];
+
+function ChessApp() {
+  const [board, setBoard] = useState(INIT_BOARD());
+  const [flipped, setFlipped] = useState(false);
+  const [moveHistory, setMoveHistory] = useState([]);
+  const [currentMoveIdx, setCurrentMoveIdx] = useState(-1);
+  const [boardHistory, setBoardHistory] = useState([INIT_BOARD()]);
+  const [selectedSq, setSelectedSq] = useState(null);
+  const [legalDots, setLegalDots] = useState([]);
+  const [dragging, setDragging] = useState(null);
+  const [dragPos, setDragPos] = useState({ x: 0, y: 0 });
+  const [arrows, setArrows] = useState([]);
+  const [turn, setTurn] = useState("w");
+  const [lastMove, setLastMove] = useState(null);
+  const [lastMoveData, setLastMoveData] = useState(null);
+  const [castleRights, setCastleRights] = useState({ wK: true, wQ: true, bK: true, bQ: true });
+  const [castleHistory, setCastleHistory] = useState([{ wK: true, wQ: true, bK: true, bQ: true }]);
+  const [lastMoveDataHistory, setLastMoveDataHistory] = useState([null]);
+  const [activeLine, setActiveLine] = useState(null);
+  const [parsedLines, setParsedLines] = useState([]);
+  const [searchFilter, setSearchFilter] = useState("");
+  const boardRef = useRef(null);
+  const sqSize = 64;
+
+  useEffect(() => {
+    const lines = buildLines();
+    const parsed = [], seen = new Set();
+    for (const line of lines) {
+      const moves = parseMoveSequence(line.moves);
+      if (moves.length > 0 && !seen.has(line.id)) { seen.add(line.id); parsed.push({ ...line, parsedMoves: moves }); }
+    }
+    setParsedLines(parsed);
+  }, []);
+
+  const updateCR = useCallback((rights, piece, fr, fc) => {
+    const nr = { ...rights };
+    if (piece.type === "K") { if (piece.color === "w") { nr.wK = false; nr.wQ = false; } else { nr.bK = false; nr.bQ = false; } }
+    if (piece.type === "R") {
+      if (piece.color === "w" && fr === 7 && fc === 7) nr.wK = false;
+      if (piece.color === "w" && fr === 7 && fc === 0) nr.wQ = false;
+      if (piece.color === "b" && fr === 0 && fc === 7) nr.bK = false;
+      if (piece.color === "b" && fr === 0 && fc === 0) nr.bQ = false;
+    }
+    return nr;
+  }, []);
+
+  const showLegalMoves = useCallback((r, c) => {
+    const moves = getLegalMoves(board, r, c, lastMoveData, castleRights);
+    const unique = [], seen = new Set();
+    for (const mv of moves) { const k = mv.tr+","+mv.tc; if (!seen.has(k)) { seen.add(k); unique.push(mv); } }
+    setLegalDots(unique);
+  }, [board, lastMoveData, castleRights]);
+
+  const goToMove = useCallback((idx) => {
+    if (idx < -1 || idx >= moveHistory.length) return;
+    setCurrentMoveIdx(idx); setBoard(boardHistory[idx + 1]); setTurn(idx % 2 === 0 ? "b" : "w");
+    setCastleRights(castleHistory[idx + 1]); setLastMoveData(lastMoveDataHistory[idx + 1]);
+    setLastMove(idx >= 0 ? { fr: moveHistory[idx].fr, fc: moveHistory[idx].fc, tr: moveHistory[idx].tr, tc: moveHistory[idx].tc } : null);
+    setSelectedSq(null); setLegalDots([]);
+  }, [moveHistory, boardHistory, castleHistory, lastMoveDataHistory]);
+
+  const makeMove = useCallback((fr, fc, tr, tc, promo) => {
+    const piece = board[fr][fc];
+    if (!piece || piece.color !== turn) return false;
+    const legal = getLegalMoves(board, fr, fc, lastMoveData, castleRights);
+    if (!legal.some(m => m.tr === tr && m.tc === tc)) return false;
+    if (piece.type === "P" && (tr === 0 || tr === 7) && !promo) promo = "Q";
+    const san = generateSAN(board, fr, fc, tr, tc, promo, castleRights, lastMoveData);
+    const nb = applyMoveRaw(board, fr, fc, tr, tc, promo);
+    const newCR = updateCR(castleRights, piece, fr, fc);
+    const newLMD = { piece: piece.type, fr, fc, tr, tc };
+    const nH = moveHistory.slice(0, currentMoveIdx + 1), nBH = boardHistory.slice(0, currentMoveIdx + 2);
+    const nCH = castleHistory.slice(0, currentMoveIdx + 2), nLH = lastMoveDataHistory.slice(0, currentMoveIdx + 2);
+    nH.push({ fr, fc, tr, tc, piece: piece.type, color: piece.color, promo, san }); nBH.push(nb); nCH.push(newCR); nLH.push(newLMD);
+    setMoveHistory(nH); setBoardHistory(nBH); setCastleHistory(nCH); setLastMoveDataHistory(nLH);
+    setCurrentMoveIdx(nH.length - 1); setBoard(nb); setTurn(turn === "w" ? "b" : "w");
+    setLastMove({ fr, fc, tr, tc }); setLastMoveData(newLMD); setCastleRights(newCR);
+    setSelectedSq(null); setLegalDots([]); return true;
+  }, [board, turn, moveHistory, boardHistory, currentMoveIdx, castleRights, lastMoveData, castleHistory, lastMoveDataHistory, updateCR]);
+
+  const loadLine = useCallback((line) => {
+    setActiveLine(line.id);
+    let b = INIT_BOARD(); const bh = [b], mh = [];
+    let cr = { wK: true, wQ: true, bK: true, bQ: true }; const crh = [{ ...cr }];
+    let lmd = null; const lmdh = [null];
+    for (const mv of line.parsedMoves) {
+      const piece = b[mv.fr][mv.fc];
+      b = applyMoveRaw(b, mv.fr, mv.fc, mv.tr, mv.tc, mv.promo); bh.push(b); mh.push(mv);
+      cr = { ...cr };
+      if (piece?.type === "K") { if (piece.color === "w") { cr.wK = false; cr.wQ = false; } else { cr.bK = false; cr.bQ = false; } }
+      if (piece?.type === "R") { if (piece.color === "w" && mv.fr === 7 && mv.fc === 7) cr.wK = false; if (piece.color === "w" && mv.fr === 7 && mv.fc === 0) cr.wQ = false; if (piece.color === "b" && mv.fr === 0 && mv.fc === 7) cr.bK = false; if (piece.color === "b" && mv.fr === 0 && mv.fc === 0) cr.bQ = false; }
+      crh.push({ ...cr }); lmd = { piece: piece?.type, fr: mv.fr, fc: mv.fc, tr: mv.tr, tc: mv.tc }; lmdh.push(lmd);
+    }
+    setMoveHistory(mh); setBoardHistory(bh); setCastleHistory(crh); setLastMoveDataHistory(lmdh);
+    setBoard(INIT_BOARD()); setCurrentMoveIdx(-1); setTurn("w"); setLastMove(null); setLastMoveData(null);
+    setCastleRights({ wK: true, wQ: true, bK: true, bQ: true }); setSelectedSq(null); setLegalDots([]); setArrows([]);
+  }, []);
+
+  const resetBoard = useCallback(() => {
+    setBoard(INIT_BOARD()); setMoveHistory([]); setBoardHistory([INIT_BOARD()]);
+    setCastleHistory([{ wK: true, wQ: true, bK: true, bQ: true }]); setLastMoveDataHistory([null]);
+    setCurrentMoveIdx(-1); setTurn("w"); setLastMove(null); setLastMoveData(null);
+    setCastleRights({ wK: true, wQ: true, bK: true, bQ: true }); setSelectedSq(null); setLegalDots([]); setArrows([]); setActiveLine(null);
+  }, []);
+
+  useEffect(() => {
+    if (parsedLines.length === 0) { setArrows([]); return; }
+    const nextIdx = currentMoveIdx + 1; const arrs = [], seen = new Set();
+    for (const line of parsedLines) {
+      if (nextIdx < line.parsedMoves.length) {
+        let match = true;
+        for (let i = 0; i <= currentMoveIdx && i < line.parsedMoves.length; i++) {
+          const hm = moveHistory[i], lm = line.parsedMoves[i];
+          if (!hm || !lm || hm.fr !== lm.fr || hm.fc !== lm.fc || hm.tr !== lm.tr || hm.tc !== lm.tc) { match = false; break; }
+        }
+        if (match && currentMoveIdx < line.parsedMoves.length) {
+          const nm = line.parsedMoves[nextIdx]; const key = ""+nm.fr+nm.fc+nm.tr+nm.tc;
+          if (!seen.has(key)) { seen.add(key); arrs.push({ fr: nm.fr, fc: nm.fc, tr: nm.tr, tc: nm.tc, color: line.color }); }
+        }
+      }
+    }
+    setArrows(arrs);
+  }, [currentMoveIdx, moveHistory, parsedLines]);
+
+  const getDisplayCoords = (r, c) => flipped ? [7 - r, 7 - c] : [r, c];
+  const getBoardCoords = (dr, dc) => flipped ? [7 - dr, 7 - dc] : [dr, dc];
+
+  const handleSquareClick = (r, c) => {
+    if (dragging) return; const piece = board[r][c];
+    if (selectedSq) {
+      if (selectedSq[0] === r && selectedSq[1] === c) { setSelectedSq(null); setLegalDots([]); return; }
+      if (piece && piece.color === turn) { setSelectedSq([r, c]); showLegalMoves(r, c); return; }
+      makeMove(selectedSq[0], selectedSq[1], r, c);
+    } else if (piece && piece.color === turn) { setSelectedSq([r, c]); showLegalMoves(r, c); }
+  };
+
+  const handleDragStart = (e, r, c) => {
+    const piece = board[r][c]; if (!piece || piece.color !== turn) return; e.preventDefault();
+    const rect = boardRef.current.getBoundingClientRect();
+    const cx = e.touches ? e.touches[0].clientX : e.clientX, cy = e.touches ? e.touches[0].clientY : e.clientY;
+    setDragging({ r, c, piece }); setDragPos({ x: cx - rect.left, y: cy - rect.top }); setSelectedSq([r, c]); showLegalMoves(r, c);
+  };
+  const handleDragMove = useCallback((e) => {
+    if (!dragging || !boardRef.current) return; e.preventDefault();
+    const rect = boardRef.current.getBoundingClientRect();
+    const cx = e.touches ? e.touches[0].clientX : e.clientX, cy = e.touches ? e.touches[0].clientY : e.clientY;
+    setDragPos({ x: cx - rect.left, y: cy - rect.top });
+  }, [dragging]);
+  const handleDragEnd = useCallback((e) => {
+    if (!dragging || !boardRef.current) return; e.preventDefault();
+    const rect = boardRef.current.getBoundingClientRect();
+    const cx = e.changedTouches ? e.changedTouches[0].clientX : e.clientX, cy = e.changedTouches ? e.changedTouches[0].clientY : e.clientY;
+    const x = cx - rect.left, y = cy - rect.top, dc = Math.floor(x / sqSize), dr = Math.floor(y / sqSize);
+    if (dc >= 0 && dc < 8 && dr >= 0 && dr < 8) { const [tr, tc] = getBoardCoords(dr, dc); makeMove(dragging.r, dragging.c, tr, tc); }
+    setDragging(null); setSelectedSq(null); setLegalDots([]);
+  }, [dragging, flipped, makeMove, getBoardCoords]);
+
+  useEffect(() => {
+    window.addEventListener("mousemove", handleDragMove); window.addEventListener("mouseup", handleDragEnd);
+    window.addEventListener("touchmove", handleDragMove, { passive: false }); window.addEventListener("touchend", handleDragEnd);
+    return () => { window.removeEventListener("mousemove", handleDragMove); window.removeEventListener("mouseup", handleDragEnd); window.removeEventListener("touchmove", handleDragMove); window.removeEventListener("touchend", handleDragEnd); };
+  }, [handleDragMove, handleDragEnd]);
+
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.key === "ArrowLeft") goToMove(currentMoveIdx - 1);
+      else if (e.key === "ArrowRight") goToMove(currentMoveIdx + 1);
+      else if (e.key === "ArrowUp") { e.preventDefault(); goToMove(-1); }
+      else if (e.key === "ArrowDown") { e.preventDefault(); goToMove(moveHistory.length - 1); }
+    };
+    window.addEventListener("keydown", handler); return () => window.removeEventListener("keydown", handler);
+  }, [currentMoveIdx, goToMove, moveHistory.length]);
+
+  const renderArrow = (arrow, idx) => {
+    const [fdr, fdc] = getDisplayCoords(arrow.fr, arrow.fc), [tdr, tdc] = getDisplayCoords(arrow.tr, arrow.tc);
+    const x1 = fdc * sqSize + sqSize / 2, y1 = fdr * sqSize + sqSize / 2, x2 = tdc * sqSize + sqSize / 2, y2 = tdr * sqSize + sqSize / 2;
+    const angle = Math.atan2(y2 - y1, x2 - x1);
+    const sx = x1 + Math.cos(angle) * 6, sy = y1 + Math.sin(angle) * 6, ex = x2 - Math.cos(angle) * 4, ey = y2 - Math.sin(angle) * 4;
+    const mid = "ah-" + idx;
+    return React.createElement("g", { key: idx },
+      React.createElement("defs", null, React.createElement("marker", { id: mid, markerWidth: 7, markerHeight: 5, refX: 7, refY: 2.5, orient: "auto" }, React.createElement("polygon", { points: "0 0, 7 2.5, 0 5", fill: arrow.color }))),
+      React.createElement("line", { x1: sx, y1: sy, x2: ex, y2: ey, stroke: arrow.color, strokeWidth: 7, strokeOpacity: 0.8, markerEnd: "url(#" + mid + ")", strokeLinecap: "round" })
+    );
+  };
+
+  const formatMoveList = () => {
+    const pairs = [];
+    for (let i = 0; i < moveHistory.length; i += 2) pairs.push({ num: Math.floor(i / 2) + 1, white: moveHistory[i], black: moveHistory[i + 1] || null, wIdx: i, bIdx: i + 1 });
+    return pairs;
+  };
+
+  const isDotSq = (r, c) => legalDots.some(m => m.tr === r && m.tc === c);
+  const isDotCap = (r, c) => board[r][c] && legalDots.some(m => m.tr === r && m.tc === c);
+
+  const filteredLines = parsedLines.filter(l => l.name.toLowerCase().includes(searchFilter.toLowerCase()));
+  const activeLineObj = parsedLines.find(l => l.id === activeLine);
+
+  const detectedOpening = (() => {
+    if (currentMoveIdx < 0) return activeLineObj ? { category: getCategory(activeLineObj), line: activeLineObj } : null;
+    let bestMatch = null, bestLen = 0;
+    for (const line of parsedLines) {
+      let matchLen = 0;
+      for (let i = 0; i <= currentMoveIdx && i < line.parsedMoves.length; i++) {
+        const hm = moveHistory[i], lm = line.parsedMoves[i];
+        if (hm && lm && hm.fr === lm.fr && hm.fc === lm.fc && hm.tr === lm.tr && hm.tc === lm.tc) matchLen = i + 1; else break;
+      }
+      if (matchLen > bestLen) { bestLen = matchLen; bestMatch = line; }
+    }
+    if (!bestMatch || bestLen === 0) {
+      const m0 = moveHistory[0];
+      if (m0 && m0.fr === 6 && m0.fc === 4 && m0.tr === 4 && m0.tc === 4) {
+        if (currentMoveIdx >= 1 && moveHistory[1]?.fr === 1 && moveHistory[1]?.fc === 4) return { category: "King's Pawn Game", line: null, detail: "1.e4 e5" };
+        return { category: "King's Pawn Opening", line: null, detail: "1.e4" };
+      }
+      return { category: "Unknown Opening", line: null };
+    }
+    const cat = bestMatch.cat; let category;
+    if (bestLen >= 6 && cat === "evans") category = "Evans Gambit";
+    else if (bestLen >= 7 && cat === "tk") {
+      if (bestMatch.id === "tk9") category = "Two Knights': Fritz";
+      else if (bestMatch.id === "tk10") category = "Two Knights': Ulvestad";
+      else if (bestMatch.id === "tk11") category = "Two Knights': Traxler";
+      else if (bestMatch.id === "tk12") category = "Two Knights': Nxf7 Gambit";
+      else category = "Two Knights' Defense";
+    }
+    else if (bestLen >= 7 && cat === "tk_d4") { if (["tk13","tk14","tk15"].includes(bestMatch.id)) category = "Max Lange Attack"; else category = "Two Knights' \u2014 4.d4 5.0-0"; }
+    else if (bestLen >= 6 && cat === "tk_misc") {
+      if (["tk19","tk20"].includes(bestMatch.id)) category = "Two Knights': 4.d4 e5 Bb5";
+      else if (["tk21","tk22","tk23"].includes(bestMatch.id)) category = "Italian: 4.d3 Be7";
+      else if (bestMatch.id === "tk24") category = "Italian: 4.Nc3 Nxe4";
+      else category = "Two Knights' \u2014 Other";
+    }
+    else if (bestLen >= 5 && cat === "ruy") category = "Ruy Lopez: Classical (Cordel)";
+    else if (bestLen >= 5 && cat === "ruy_berlin") { if (["ruyB8","ruyB9"].includes(bestMatch.id) && bestLen >= 8) category = "Ruy Lopez: Berlin Wall"; else category = "Ruy Lopez: Berlin Defense"; }
+    else if (bestLen >= 5 && cat === "ruy_cozio") category = "Ruy Lopez: Cozio Defense";
+    else if (bestLen >= 5 && cat === "ruy_bird") category = "Ruy Lopez: Bird's Defense";
+    else if (bestLen >= 5 && cat === "ruy_steinitz") category = "Ruy Lopez: Old Steinitz Defense";
+    else if (bestLen >= 5 && cat === "ruy_g6") category = "Ruy Lopez: 3...g6";
+    else if (bestLen >= 5 && (cat === "gp" || cat === "d3" || cat === "other")) category = "Giuoco Piano";
+    else if (bestLen >= 4) {
+      const m4 = moveHistory[4];
+      if (m4 && m4.tr === 4 && m4.tc === 1) category = "Ruy Lopez";
+      else category = "Italian Game";
+    }
+    else if (bestLen >= 3) category = "Italian Game";
+    else if (bestLen >= 2) category = "King's Knight Opening";
+    else category = "King's Pawn Game";
+    if (bestLen >= 8) return { category, line: bestMatch };
+    return { category, line: bestLen >= 6 ? bestMatch : null };
+  })();
+
+  const groupedLines = [];
+  for (const { cat, label } of CATEGORY_ORDER) {
+    const catLines = filteredLines.filter(l => l.cat === cat);
+    if (catLines.length > 0) groupedLines.push({ label, lines: catLines });
+  }
+
+  return React.createElement("div", { style: { display: "flex", flexDirection: "column", alignItems: "center", background: "#1a1a2e", minHeight: "100vh", color: "#e0e0e0", fontFamily: "'Segoe UI', Tahoma, sans-serif", padding: "10px 0" } },
+    React.createElement("h1", { style: { fontSize: 22, fontWeight: 700, color: "#f0f0f0", margin: "0 0 10px" } }, "Italian Game Repertoire"),
+    React.createElement("div", { style: { display: "flex", gap: 16, flexWrap: "wrap", justifyContent: "center", alignItems: "flex-start" } },
+      React.createElement("div", null,
+        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 } },
+          React.createElement("button", { onClick: () => setFlipped(!flipped), style: { background: "#2d2d4a", color: "#ccc", border: "1px solid #444", borderRadius: 4, padding: "5px 14px", cursor: "pointer", fontSize: 13 } }, "Flip Board"),
+          React.createElement("button", { onClick: resetBoard, style: { background: "#2d2d4a", color: "#ccc", border: "1px solid #444", borderRadius: 4, padding: "5px 14px", cursor: "pointer", fontSize: 13 } }, "Reset")
+        ),
+        React.createElement("div", { style: { width: sqSize * 8, marginBottom: 4, borderRadius: 5, padding: "4px 10px", background: "#16213e", border: "1px solid #333", textAlign: "center", minHeight: 44, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", boxSizing: "border-box" } },
+          detectedOpening ? React.createElement(React.Fragment, null,
+            React.createElement("div", { style: { fontSize: 15, fontWeight: 700, color: "#f0c040", letterSpacing: 0.5 } }, detectedOpening.category),
+            detectedOpening.line ? React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, marginTop: 2 } },
+              React.createElement("div", { style: { width: 8, height: 8, borderRadius: 2, background: detectedOpening.line.color, flexShrink: 0 } }),
+              React.createElement("span", { style: { fontSize: 12, fontWeight: 500, color: "#aaa" } }, detectedOpening.line.name),
+              React.createElement("span", { style: { fontSize: 11, color: "#666" } }, "(" + (currentMoveIdx + 1) + "/" + detectedOpening.line.parsedMoves.length + ")")
+            ) : detectedOpening.detail ? React.createElement("div", { style: { fontSize: 11, color: "#777", marginTop: 2 } }, detectedOpening.detail) : null
+          ) : React.createElement("span", { style: { fontSize: 13, color: "#555" } }, "Select a line to begin")
+        ),
+        React.createElement("div", { ref: boardRef, style: { position: "relative", width: sqSize * 8, height: sqSize * 8, border: "2px solid #555", userSelect: "none", touchAction: "none" } },
+          Array(8).fill(null).map((_, dr) =>
+            Array(8).fill(null).map((_, dc) => {
+              const [r, c] = getBoardCoords(dr, dc);
+              const isLight = (dr + dc) % 2 === 0, piece = board[r][c];
+              const isSelected = selectedSq && selectedSq[0] === r && selectedSq[1] === c;
+              const isLM = lastMove && ((lastMove.fr === r && lastMove.fc === c) || (lastMove.tr === r && lastMove.tc === c));
+              const isDragThis = dragging && dragging.r === r && dragging.c === c;
+              const hasDot = isDotSq(r, c), isCapDot = isDotCap(r, c);
+              let bg = isLight ? "#f0d9b5" : "#b58863";
+              if (isLM) bg = isLight ? "#f7ec5e" : "#dac34b";
+              if (isSelected) bg = isLight ? "#f7f769" : "#bbcb2b";
+              return React.createElement("div", { key: dr + "-" + dc, style: { position: "absolute", left: dc * sqSize, top: dr * sqSize, width: sqSize, height: sqSize, background: bg, display: "flex", alignItems: "center", justifyContent: "center", cursor: piece ? "pointer" : hasDot ? "pointer" : "default" }, onClick: () => handleSquareClick(r, c), onMouseDown: (e) => piece && handleDragStart(e, r, c), onTouchStart: (e) => piece && handleDragStart(e, r, c) },
+                dc === 0 && React.createElement("span", { style: { position: "absolute", top: 2, left: 3, fontSize: 10, fontWeight: 700, color: isLight ? "#b58863" : "#f0d9b5" } }, flipped ? (dr + 1) : (8 - dr)),
+                dr === 7 && React.createElement("span", { style: { position: "absolute", bottom: 1, right: 3, fontSize: 10, fontWeight: 700, color: isLight ? "#b58863" : "#f0d9b5" } }, FILES[flipped ? 7 - dc : dc]),
+                piece && !isDragThis && React.createElement("span", { style: { fontSize: sqSize * 0.78, lineHeight: 1, pointerEvents: "none", color: piece.color === "b" ? "#000" : "#fff", textShadow: piece.color === "w" ? "0 0 3px rgba(0,0,0,0.5)" : "0 0 3px rgba(255,255,255,0.4)" } }, PIECE_UNICODE[piece.type][piece.color]),
+                hasDot && !isCapDot && React.createElement("div", { style: { position: "absolute", width: 16, height: 16, borderRadius: "50%", background: "rgba(0,0,0,0.25)", pointerEvents: "none" } }),
+                isCapDot && React.createElement("div", { style: { position: "absolute", width: sqSize - 4, height: sqSize - 4, borderRadius: "50%", border: "4px solid rgba(0,0,0,0.25)", pointerEvents: "none", boxSizing: "border-box" } })
+              );
+            })
+          ),
+          React.createElement("svg", { style: { position: "absolute", top: 0, left: 0, width: sqSize * 8, height: sqSize * 8, pointerEvents: "none" } }, arrows.map((a, i) => renderArrow(a, i))),
+          dragging && React.createElement("span", { style: { position: "absolute", left: dragPos.x - sqSize / 2, top: dragPos.y - sqSize / 2, fontSize: sqSize * 0.85, lineHeight: 1, pointerEvents: "none", zIndex: 100, color: dragging.piece.color === "b" ? "#000" : "#fff", filter: "drop-shadow(0 4px 8px rgba(0,0,0,0.5))" } }, PIECE_UNICODE[dragging.piece.type][dragging.piece.color])
+        ),
+        React.createElement("div", { style: { display: "flex", justifyContent: "center", gap: 6, marginTop: 8 } },
+          [{ label: "\u23EE", action: () => goToMove(-1) }, { label: "\u25C0", action: () => goToMove(currentMoveIdx - 1) }, { label: "\u25B6", action: () => goToMove(currentMoveIdx + 1) }, { label: "\u23ED", action: () => goToMove(moveHistory.length - 1) }].map((btn, i) =>
+            React.createElement("button", { key: i, onClick: btn.action, style: { background: "#2d2d4a", color: "#ddd", border: "1px solid #555", borderRadius: 4, padding: "6px 16px", cursor: "pointer", fontSize: 16 } }, btn.label)
+          )
+        )
+      ),
+      React.createElement("div", { style: { width: 300, display: "flex", flexDirection: "column", gap: 8 } },
+        React.createElement("div", { style: { background: "#16213e", borderRadius: 6, padding: 10, maxHeight: 200, overflowY: "auto", border: "1px solid #333" } },
+          React.createElement("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 6, color: "#aaa" } }, "Moves"),
+          React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 2 } },
+            formatMoveList().map(pair =>
+              React.createElement("div", { key: pair.num, style: { display: "flex", gap: 2, alignItems: "center", fontSize: 13 } },
+                React.createElement("span", { style: { color: "#777", minWidth: 24 } }, pair.num + "."),
+                React.createElement("span", { onClick: () => goToMove(pair.wIdx), style: { padding: "2px 5px", borderRadius: 3, cursor: "pointer", background: currentMoveIdx === pair.wIdx ? "#4a6fa5" : "transparent", color: currentMoveIdx === pair.wIdx ? "#fff" : "#ccc" } }, pair.white?.san || "?"),
+                pair.black && React.createElement("span", { onClick: () => goToMove(pair.bIdx), style: { padding: "2px 5px", borderRadius: 3, cursor: "pointer", background: currentMoveIdx === pair.bIdx ? "#4a6fa5" : "transparent", color: currentMoveIdx === pair.bIdx ? "#fff" : "#ccc" } }, pair.black?.san || "?")
+              )
+            ),
+            moveHistory.length === 0 && React.createElement("span", { style: { color: "#555", fontSize: 12 } }, "Select a line to begin")
+          )
+        ),
+        React.createElement("div", { style: { background: "#16213e", borderRadius: 6, padding: 10, maxHeight: 420, overflowY: "auto", border: "1px solid #333" } },
+          React.createElement("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 8, color: "#aaa" } }, "Lines (" + filteredLines.length + ")"),
+          React.createElement("input", { type: "text", placeholder: "Filter lines...", value: searchFilter, onChange: e => setSearchFilter(e.target.value), style: { width: "100%", padding: "5px 8px", marginBottom: 8, background: "#1a1a2e", border: "1px solid #444", borderRadius: 4, color: "#ccc", fontSize: 12, boxSizing: "border-box", outline: "none" } }),
+          groupedLines.map((group, gi) =>
+            React.createElement("div", { key: gi },
+              React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: "#667", textTransform: "uppercase", letterSpacing: 0.5, margin: "8px 0 4px", paddingBottom: 3, borderBottom: "1px solid #2a2a40" } }, group.label),
+              group.lines.map(line =>
+                React.createElement("div", { key: line.id, onClick: () => loadLine(line), style: { padding: "6px 10px", marginBottom: 3, borderRadius: 5, cursor: "pointer", background: activeLine === line.id ? "#2a3f5f" : "#1a1a2e", borderLeft: "4px solid " + line.color, transition: "background 0.15s" } },
+                  React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: activeLine === line.id ? "#fff" : "#bbb" } }, line.name),
+                  React.createElement("div", { style: { fontSize: 10, color: "#666", marginTop: 1 } }, line.parsedMoves.length + " moves")
+                )
+              )
+            )
+          )
+        ),
+        React.createElement("div", { style: { fontSize: 11, color: "#555", textAlign: "center" } }, "Arrow keys to navigate \u00B7 Click or drag pieces")
+      )
+    )
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(ChessApp));
+  </script>
+</body>
+</html>
